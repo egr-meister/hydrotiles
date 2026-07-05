@@ -83,6 +83,23 @@ jobs:
         working-directory: android
         run: ./gradlew :app:bundleRelease --no-daemon
 
+      - name: Verify release signing (fail if debug-signed)
+        run: |
+          set -e
+          APKSIGNER="$(ls "$ANDROID_HOME"/build-tools/35.0.0/apksigner 2>/dev/null || true)"
+          if [ -z "$APKSIGNER" ]; then
+            APKSIGNER="$(find "$ANDROID_HOME"/build-tools -name apksigner | sort | tail -n1)"
+          fi
+          APK="$(ls android/app/build/outputs/apk/release/*.apk | head -n1)"
+          echo "Using apksigner: $APKSIGNER"
+          echo "Verifying: $APK"
+          "$APKSIGNER" verify --print-certs "$APK" | tee signer-certs.txt
+          if grep -qi "CN=Android Debug" signer-certs.txt; then
+            echo "::error::APK is signed with the Android DEBUG key. Play Store will reject it."
+            exit 1
+          fi
+          echo "Release signing verified: not a debug key."
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
