@@ -56,31 +56,59 @@ jobs:
         run: |
           echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/hydrotiles-release-key.p12
 
-      - name: Configure signing
-        env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      - name: Configure release signing
         run: |
-          # Provide signing values to Gradle.
-          {
-            echo "HYDROTILES_UPLOAD_STORE_FILE=hydrotiles-release-key.p12"
-            echo "HYDROTILES_UPLOAD_STORE_PASSWORD=${ANDROID_KEYSTORE_PASSWORD}"
-            echo "HYDROTILES_UPLOAD_KEY_ALIAS=${ANDROID_KEY_ALIAS}"
-            echo "HYDROTILES_UPLOAD_KEY_PASSWORD=${ANDROID_KEY_PASSWORD}"
-          } >> android/gradle.properties
-          # Apply the signing gradle script to the generated app build.gradle.
-          if ! grep -q "android-signing.gradle" android/app/build.gradle; then
-            echo '' >> android/app/build.gradle
-            echo 'apply from: "../../android-signing.gradle"' >> android/app/build.gradle
-          fi
+          python3 - <<'PY'
+          import io, sys, re
+          path = "android/app/build.gradle"
+          s = io.open(path, encoding="utf-8").read()
+
+          release_cfg = (
+              "        release {\n"
+              "            storeFile file(System.getenv(\"HYDROTILES_STORE_FILE\") ?: \"hydrotiles-release-key.p12\")\n"
+              "            storePassword System.getenv(\"HYDROTILES_STORE_PASSWORD\")\n"
+              "            keyAlias System.getenv(\"HYDROTILES_KEY_ALIAS\")\n"
+              "            keyPassword System.getenv(\"HYDROTILES_KEY_PASSWORD\")\n"
+              "            storeType \"PKCS12\"\n"
+              "        }\n"
+          )
+
+          # 1) Add a release signingConfig into the existing signingConfigs { ... } block.
+          if "release {" not in s.split("buildTypes", 1)[0]:
+              idx = s.find("signingConfigs {")
+              if idx == -1:
+                  print("ERROR: signingConfigs block not found", file=sys.stderr); sys.exit(1)
+              insert_at = s.index("\n", idx) + 1
+              s = s[:insert_at] + release_cfg + s[insert_at:]
+
+          # 2) Point every buildType that used the debug signing config at the release one.
+          before = s
+          s = s.replace("signingConfig signingConfigs.debug", "signingConfig signingConfigs.release")
+          if s == before:
+              print("WARNING: no 'signingConfig signingConfigs.debug' line was replaced", file=sys.stderr)
+
+          io.open(path, "w", encoding="utf-8").write(s)
+          print("---- signing section of build.gradle ----")
+          m = re.search(r"signingConfigs \{.*?buildTypes \{.*?\n    \}", s, re.S)
+          print(m.group(0) if m else s)
+          PY
 
       - name: Build release APK
         working-directory: android
+        env:
+          HYDROTILES_STORE_FILE: hydrotiles-release-key.p12
+          HYDROTILES_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          HYDROTILES_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          HYDROTILES_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: ./gradlew :app:assembleRelease --no-daemon
 
       - name: Build release AAB
         working-directory: android
+        env:
+          HYDROTILES_STORE_FILE: hydrotiles-release-key.p12
+          HYDROTILES_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          HYDROTILES_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          HYDROTILES_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: ./gradlew :app:bundleRelease --no-daemon
 
       - name: Verify release signing (fail if debug-signed)
